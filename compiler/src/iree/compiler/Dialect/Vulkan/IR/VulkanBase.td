@@ -110,7 +110,7 @@ def VK_TTA_CPU       : I32EnumAttrCase<"CPU", 1, "cpu">;
 def VK_TTA_RDNAv1    : I32EnumAttrCase<"AMD_RDNAv1", 100, "rdna1">;
 def VK_TTA_RDNAv2    : I32EnumAttrCase<"AMD_RDNAv2", 101, "rdna2">;
 def VK_TTA_RDNAv3    : I32EnumAttrCase<"AMD_RDNAv3", 102, "rdna3">;
-def VK_TTA_GCNv3    : I32EnumAttrCase<"AMD_GCNv3", 102, "gcn3">;
+def VK_TTA_GCNv3    : I32EnumAttrCase<"AMD_GCNv3", 103, "gcn3">;
 // Apple Silicon GPU
 def VK_TTA_M1        : I32EnumAttrCase<"Apple_M1", 200, "m1">;
 // ARM Mali GPU
