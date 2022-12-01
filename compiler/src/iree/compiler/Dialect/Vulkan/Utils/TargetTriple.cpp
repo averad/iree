@@ -282,7 +282,7 @@ CapabilitiesAttr getCapabilities(const TargetTriple &triple,
           /*mSize=*/16, /*nSize=*/16, /*kSize=*/16, /*aType=*/f16t,
           /*bType=*/f16t, /*cType=*/f16t, /*resultType=*/f16t, scope));
     } break;
-	case TargetTripleArch::AMD_GCNv3:
+	case TargetTripleArch::AMD_GCNv3: {
       maxComputeSharedMemorySize = 65536;
       maxComputeWorkGroupInvocations = 1024;
       maxComputeWorkGroupSize = {1024, 1024, 1024};
