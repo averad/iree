@@ -34,6 +34,7 @@ spirv::Vendor getVendor(const TargetTriple &triple) {
     case TargetTripleArch::AMD_RDNAv1:
     case TargetTripleArch::AMD_RDNAv2:
     case TargetTripleArch::AMD_RDNAv3:
+	case TargetTripleArch::AMD_GCNv3:
       return spirv::Vendor::AMD;
     case TargetTripleArch::ARM_Valhall:
       return spirv::Vendor::ARM;
@@ -67,6 +68,7 @@ spirv::DeviceType getDeviceType(const TargetTriple &triple) {
     case TargetTripleArch::AMD_RDNAv1:
     case TargetTripleArch::AMD_RDNAv2:
     case TargetTripleArch::AMD_RDNAv3:
+	case TargetTripleArch::AMD_GCNv3:
     case TargetTripleArch::NV_Turing:
     case TargetTripleArch::NV_Ampere:
       return spirv::DeviceType::DiscreteGPU;
@@ -280,6 +282,30 @@ CapabilitiesAttr getCapabilities(const TargetTriple &triple,
           /*mSize=*/16, /*nSize=*/16, /*kSize=*/16, /*aType=*/f16t,
           /*bType=*/f16t, /*cType=*/f16t, /*resultType=*/f16t, scope));
     } break;
+	case TargetTripleArch::AMD_GCNv3:
+      maxComputeSharedMemorySize = 65536;
+      maxComputeWorkGroupInvocations = 1024;
+      maxComputeWorkGroupSize = {1024, 1024, 1024};
+
+      subgroupSize = 64;
+      subgroupFeatures = SubgroupFeature::Basic | SubgroupFeature::Vote |
+                         SubgroupFeature::Arithmetic | SubgroupFeature::Ballot |
+                         SubgroupFeature::Shuffle |
+                         SubgroupFeature::ShuffleRelative |
+                         SubgroupFeature::Clustered | SubgroupFeature::Quad;
+
+      shaderFloat16 = shaderFloat64 = false;
+      shaderInt8 = shaderInt16 = shaderInt64 = true;
+
+      storageBuffer16BitAccess = storagePushConstant16 = false;
+      uniformAndStorageBuffer16BitAccess = true;
+      storageBuffer8BitAccess = true, storagePushConstant8 = false;
+      uniformAndStorageBuffer8BitAccess = true;
+
+      variablePointers = variablePointersStorageBuffer = true;
+      auto f16t = builder.getF16Type();
+      auto scope = ScopeNVAttr::get(context, ScopeNV::Subgroup);
+	} break;
     case TargetTripleArch::Apple_M1:
       // Example: https://vulkan.gpuinfo.org/displayreport.php?id=14673
       maxComputeSharedMemorySize = 32768;
