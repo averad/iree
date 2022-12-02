@@ -124,7 +124,7 @@ def VK_TTA_Adreno    : I32EnumAttrCase<"QC_Adreno", 500, "adreno">;
 def VK_TargetArchAttr : VK_I32EnumAttr<
   "TargetTripleArch", "recognized target architecture", [
     VK_TTA_Unknown, VK_TTA_CPU, VK_TTA_RDNAv1, VK_TTA_RDNAv2,
-    VK_TTA_RDNAv3, VK_TTA_AMD_RGCNv3, VK_TTA_M1, VK_TTA_Valhall, 
+    VK_TTA_RDNAv3, VK_TTA_RGCNv3, VK_TTA_M1, VK_TTA_Valhall, 
     VK_TTA_Turing, VK_TTA_Ampere, VK_TTA_Adreno,
   ]>;
 
