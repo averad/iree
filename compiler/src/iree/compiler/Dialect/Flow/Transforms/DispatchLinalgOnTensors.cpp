@@ -534,9 +534,10 @@ static bool isFusableWithConsumer(OpOperand &fusedOperand,
   Operation *producer = fusedOperand.get().getDefiningOp();
   Operation *consumer = fusedOperand.getOwner();
 
-  // Fuse unset_encoding operations with `tensor.extract_slice`.
-  if (isa<LinalgExt::UnsetEncodingOp>(producer) &&
-      isa<tensor::ExtractSliceOp>(consumer)) {
+  // Fuse unset_encoding operations with `tensor.extract_slice` and elementwise
+  // generic ops.
+  auto producerUnsetEncodingOp = dyn_cast<LinalgExt::UnsetEncodingOp>(producer);
+  if (producerUnsetEncodingOp && isa<tensor::ExtractSliceOp>(consumer)) {
     auto sliceOp = cast<tensor::ExtractSliceOp>(consumer);
     return llvm::all_of(
                sliceOp.getMixedOffsets(),
@@ -545,9 +546,14 @@ static bool isFusableWithConsumer(OpOperand &fusedOperand,
              return isConstantIntValue(ofr, 1);
            });
   }
+  auto consumerLinalgOp = dyn_cast<linalg::LinalgOp>(consumer);
+  if (producerUnsetEncodingOp && consumerLinalgOp) {
+    return linalg::isElementwise(consumerLinalgOp) &&
+           consumerLinalgOp.getNumLoops() ==
+               producerUnsetEncodingOp.getType().getRank();
+  }
 
   auto producerLinalgOp = dyn_cast<linalg::LinalgOp>(producer);
-  auto consumerLinalgOp = dyn_cast<linalg::LinalgOp>(consumer);
   if (!producerLinalgOp || !consumerLinalgOp) return false;
 
   // Check that the consumer is all parallel.
@@ -661,7 +667,8 @@ static void fuseRootsWithProducers(MLIRContext *context, Operation *root,
     for (OpOperand &operand : candidate->getOpOperands()) {
       Operation *producer = operand.get().getDefiningOp();
       if (!producer) continue;
-      if (hasFusionGroupsAttribute(producer) || hasRootOpAttribute(producer)) {
+      if (isClonableIntoDispatchOp(producer) ||
+          hasFusionGroupsAttribute(producer) || hasRootOpAttribute(producer)) {
         continue;
       }
 
@@ -806,6 +813,12 @@ static FailureOr<SmallVector<Flow::DispatchWorkgroupsOp>> createFusionGroups(
   SmallVector<Operation *> roots(numRoots, nullptr);
   DenseMap<unsigned, SmallVector<Operation *>> producers;
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- After deciding fusion groups ---\n";
+    funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+    llvm::dbgs() << "\n\n";
+  });
+
   // TODO: Incrementally add ops to an empty DispatchGroupOp instead of
   // annotating fusion group IDs via attributes.
   funcOp.walk([&](Operation *op) {
@@ -862,6 +875,12 @@ static FailureOr<SmallVector<Flow::DispatchWorkgroupsOp>> createFusionGroups(
     regionOps.push_back(regionOp);
   }
 
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- After creating flow.dispatch.region ---\n";
+    funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+    llvm::dbgs() << "\n\n";
+  });
+
   // Clone additional producers and rewrite to DispatchWorkgroupsOp.
   SmallVector<Flow::DispatchWorkgroupsOp> result;
   for (auto regionOp : regionOps) {
@@ -873,6 +892,12 @@ static FailureOr<SmallVector<Flow::DispatchWorkgroupsOp>> createFusionGroups(
 
     result.push_back(*maybeWorkgroupOp);
   }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- After creating flow.dispatch.workgroups ---\n";
+    funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+    llvm::dbgs() << "\n\n";
+  });
 
   return result;
 }
@@ -1036,31 +1061,33 @@ void DispatchLinalgOnTensorsPass::runOnOperation() {
   auto maybeWorkgroupsOps =
       createFusionGroups(rewriter, funcOp, dominanceInfo,
                          generateWorkloadRegion, aggressiveFusion);
-  if (failed(maybeWorkgroupsOps)) return signalPassFailure();
+  if (failed(maybeWorkgroupsOps)) {
+    funcOp->emitOpError("failed to create fused dispatches");
+    return signalPassFailure();
+  }
   SmallVector<Flow::DispatchWorkgroupsOp> workgroupsOps = *maybeWorkgroupsOps;
-
-  LLVM_DEBUG({
-    llvm::dbgs() << "\n--- After first step of dispatch region formation ---\n";
-    funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
-    llvm::dbgs() << "\n\n";
-  });
 
   // Step 2: Rewrite InsertSliceOps to FlowUpdateOps.
   if (failed(convertInsertSliceOps(rewriter, funcOp, workgroupsOps,
-                                   generateWorkloadRegion)))
+                                   generateWorkloadRegion))) {
+    funcOp->emitOpError(
+        "failed to create dispatch region for `tensor.insert_slice`");
     return signalPassFailure();
+  }
 
   // Step 3: Rewrite ExtractSliceOps to FlowUpdateOps.
   if (failed(convertExtractSliceOps(rewriter, funcOp, workgroupsOps,
-                                    generateWorkloadRegion)))
+                                    generateWorkloadRegion))) {
+    funcOp->emitOpError(
+        "failed to create dispatch region for `tensor.extract_slice`");
     return signalPassFailure();
+  }
 
-  // Step 4: Create a DispatchWorkgroupsOp for certain other ops.
-  FailureOr<SmallVector<Flow::DispatchWorkgroupsOp>> newWorkgroupsOps =
-      wrapInWorkgroupsOp<LinalgExt::SetEncodingOp, LinalgExt::UnsetEncodingOp>(
-          rewriter, funcOp, generateWorkloadRegion);
-  if (failed(newWorkgroupsOps)) return signalPassFailure();
-  workgroupsOps.append(newWorkgroupsOps->begin(), newWorkgroupsOps->end());
+  LLVM_DEBUG({
+    llvm::dbgs() << "\n--- After other conversions ---\n";
+    funcOp->print(llvm::dbgs(), OpPrintingFlags().useLocalScope());
+    llvm::dbgs() << "\n\n";
+  });
 
   // A few extra canonicalizations/lowerings.
   {
@@ -1071,9 +1098,11 @@ void DispatchLinalgOnTensorsPass::runOnOperation() {
         convertToFlowPatterns);
     IREE::Flow::TensorReshapeOp::getCanonicalizationPatterns(
         convertToFlowPatterns, context);
-    if (failed(applyPatternsAndFoldGreedily(funcOp,
-                                            std::move(convertToFlowPatterns))))
+    if (failed(applyPatternsAndFoldGreedily(
+            funcOp, std::move(convertToFlowPatterns)))) {
+      funcOp->emitOpError("failed conversion to flow.tensor ops");
       return signalPassFailure();
+    }
 
     // Finally fold `tensor.insert_slice/extract_slice` operations with
     // `flow.dispatch.tensor.load/store`.
@@ -1081,8 +1110,12 @@ void DispatchLinalgOnTensorsPass::runOnOperation() {
     Flow::populateTensorSliceOpWithDispatchTensorOpFoldingPatterns(
         foldExtractInsertSliceOps, context);
     if (failed(applyPatternsAndFoldGreedily(
-            funcOp, std::move(foldExtractInsertSliceOps))))
+            funcOp, std::move(foldExtractInsertSliceOps)))) {
+      funcOp->emitOpError(
+          "failed to insert/extract_slice with "
+          "flow.dispatch.tensor.load/store");
       return signalPassFailure();
+    }
   }
 }
 

@@ -692,7 +692,8 @@ def IREELinalgExt_UnPackOp : IREELinalgExt_Op<"unpack", [
      "getLoopIteratorTypes",
      "generateScalarImplementation",
      "getResultTilePosition",
-     "getTiledImplementation"]>,
+     "getTiledImplementation",
+     "generateResultTileValue"]>,
   DeclareOpInterfaceMethods<MemoryEffectsOpInterface>
 ]>{
   let summary = "unpack operation";
@@ -1004,7 +1005,7 @@ def IREELinalgExt_WinogradOutputTransformOp : IREELinalgExt_Op<"winograd.output_
                        Variadic<AnyShaped>:$outputs,
                        I64Attr:$output_tile_size,
                        I64Attr:$kernel_size,
-                       I64ArrayAttr:$image_dimensions
+                       DenseI64ArrayAttr:$image_dimensions
   );
 
   let builders = [
@@ -1039,7 +1040,7 @@ def IREELinalgExt_WinogradOutputTransformOp : IREELinalgExt_Op<"winograd.output_
       return output().getType().cast<ShapedType>();
     }
     SmallVector<int64_t> imageDimensions() {
-      return extractFromI64ArrayAttr(getImageDimensions());
+      return llvm::to_vector(getImageDimensions());
     }
     int64_t getInputOperandRank() {
       return getInputOperandType().getRank();

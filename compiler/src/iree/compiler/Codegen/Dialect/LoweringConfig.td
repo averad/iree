@@ -47,8 +47,10 @@ def SPIRV_CooperativeMatrixVectorize
     : I32EnumAttrCase<"SPIRVCooperativeMatrixVectorize", 18>;
 def SPIRV_SubgroupReduce
     : I32EnumAttrCase<"SPIRVSubgroupReduce", 19>;
+def SPIRV_WinogradVectorize
+    : I32EnumAttrCase<"SPIRVWinogradVectorize", 20>;
 
-def VMVX_Default : I32EnumAttrCase<"VMVXDefault", 20>;
+def VMVX_Default : I32EnumAttrCase<"VMVXDefault", 21>;
 
 
 def Linalg_TransformInterpCodegen
@@ -72,7 +74,7 @@ def DispatchLoweringPassPipelineEnum
                     LLVMGPU_TransposeSharedMem, LLVMGPU_WarpReduction,
                     SPIRV_BaseDistribute, SPIRV_BaseVectorize,
                     SPIRV_MatmulPromoteVectorize, SPIRV_CooperativeMatrixVectorize,
-                    SPIRV_SubgroupReduce,
+                    SPIRV_SubgroupReduce, SPIRV_WinogradVectorize,
                     VMVX_Default,
                     // Transform dialect based codegen
                     Linalg_TransformInterpCodegen,
@@ -216,19 +218,24 @@ def IREECodegen_CompilationInfoAttr :
     AttrParameter<"LoweringConfigAttr", "">:$loweringConfig,
     AttrParameter<"TranslationInfoAttr", "">:$translationInfo,
     DefaultValuedParameter<"ArrayAttr", "ArrayAttr::get($_ctxt, {})",
-        "The workgroup size to use during translation.">:$workgroupSize
+        "The workgroup size to use during translation.">:$workgroupSize,
+    OptionalParameter<"llvm::Optional<int64_t>",
+        "The subgroup size to use during translation.">:$subgroupSize
   );
 
   let assemblyFormat = [{
     `<` `lowering_config` `=` $loweringConfig `,` `translation_info` `=` $translationInfo
-    (`,` `workgroup_size` `=` $workgroupSize^)? `>`
+    (`,` `workgroup_size` `=` $workgroupSize^)?
+    (`,` `subgroup_size` `=` $subgroupSize^)? `>`
   }];
 
   // The builder is externally for auto-tuner to generate the attributes.
   let builders = [
     AttrBuilder<(ins "LoweringConfigAttr":$configAttr,
       "TranslationInfoAttr":$translationInfo,
-      "ArrayRef<int64_t>":$workgroupSize)>,
+      "ArrayRef<int64_t>":$workgroupSize,
+      "llvm::Optional<int64_t>":$subgroupSize
+      )>,
   ];
   let extraClassDeclaration = [{
     SmallVector<int64_t> getWorkgroupSizeVals();

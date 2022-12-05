@@ -666,7 +666,7 @@ LogicalResult setMatmulOpConfig(spirv::ResourceLimitsAttr limits,
     return setOpConfigAndEntryPointFnTranslation(
         op->getParentOfType<func::FuncOp>(), op, tileSizes,
         CodeGenPipeline::SPIRVMatmulPromoteVectorize, workgroupSize,
-        pipelineDepth, storeStage);
+        /*subgroupSize=*/llvm::None, pipelineDepth, storeStage);
   }
 
   return setOpConfigAndEntryPointFnTranslation(
@@ -834,9 +834,9 @@ LogicalResult setCooperativeMatrixConfig(
     return v.getType().cast<ShapedType>().getElementType();
   };
 
-  spirv::ResourceLimitsAttr resourceLimits = targetEnv.getResourceLimits();
+  spirv::ResourceLimitsAttr limits = targetEnv.getResourceLimits();
   Optional<CooperativeMatrixSize> coopMatSize = getCooperativeMatrixSize(
-      resourceLimits, numSubgroupsPerWorkgroup, numMNTilesPerSubgroup,
+      limits, numSubgroupsPerWorkgroup, numMNTilesPerSubgroup,
       getElementType(lhs), getElementType(rhs), getElementType(init), dimM,
       dimN, dimK);
   if (!coopMatSize) return success();
@@ -845,7 +845,7 @@ LogicalResult setCooperativeMatrixConfig(
       SPIRVCooperativeMatrixVectorize;
 
   std::array<int64_t, 3> workgroupSize{
-      coopMatSize->nWarpCount * resourceLimits.getSubgroupSize(),
+      coopMatSize->nWarpCount * limits.getSubgroupSize(),
       coopMatSize->mWarpCount, 1};
 
   SmallVector<int64_t> vectorSizes(kIndex + 1, 0);
@@ -880,9 +880,11 @@ LogicalResult setCooperativeMatrixConfig(
   tileSizes.push_back(reductionTileSizes);
   tileSizes.push_back(vectorSizes);
 
+  Optional<int64_t> subgroupSize = limits.getSubgroupSize();
+
   return setOpConfigAndEntryPointFnTranslation(
       op->getParentOfType<func::FuncOp>(), op, tileSizes, pipeline,
-      workgroupSize);
+      workgroupSize, subgroupSize);
 }
 
 }  // namespace detail
@@ -921,6 +923,24 @@ static LogicalResult setFftOpConfig(spirv::ResourceLimitsAttr limits,
     }
   }
   TileSizesListType tileSizes = {workgroupTileSize};
+  return setOpConfigAndEntryPointFnTranslation(
+      op->getParentOfType<func::FuncOp>(), op, tileSizes, pipeline,
+      workgroupSize);
+}
+
+//===----------------------------------------------------------------------===//
+// Winograd Default Configuration
+//===----------------------------------------------------------------------===//
+
+static LogicalResult setWinogradOpConfig(spirv::ResourceLimitsAttr limits,
+                                         IREE::LinalgExt::LinalgExtOp op) {
+  // Tiling is already done by tile and decompose, so we only set pipeline and
+  // workgroup size. The tile sizes below are placeholders and were obtained
+  // by manual tuning on the AMD Navi2 GPU on a small set of convolution
+  // sizes found in the StableDiffusion model.
+  auto pipeline = CodeGenPipeline::SPIRVWinogradVectorize;
+  std::array<int64_t, 3> workgroupSize = {32, 4, 4};
+  TileSizesListType tileSizes = {{1, 32}};
   return setOpConfigAndEntryPointFnTranslation(
       op->getParentOfType<func::FuncOp>(), op, tileSizes, pipeline,
       workgroupSize);
@@ -969,8 +989,8 @@ static LogicalResult setReductionConfig(const spirv::TargetEnv &targetEnv,
       op.getOutputs()[0].getType().cast<ShapedType>().getElementType();
   if (!elementType.isIntOrFloat()) return failure();
   unsigned bitWidth = elementType.getIntOrFloatBitWidth();
-  // Reduction distribution only supports 32-bit types now.
-  if (bitWidth != 32) return failure();
+  // Reduction distribution only supports 8/16/32 bit types now.
+  if (bitWidth != 32 && bitWidth != 16 && bitWidth != 8) return failure();
 
   // Let each thread handle `vectorSize` elements.
   unsigned vectorSize = kMaxVectorNumBits / bitWidth;
@@ -1111,7 +1131,15 @@ static LogicalResult setDefaultOpConfig(spirv::ResourceLimitsAttr limits,
                                  Optional<int64_t> lossFactor = llvm::None) {
     LLVM_DEBUG(llvm::dbgs() << "\nLoss factor: " << lossFactor << "\n");
     initConfiguration();
-
+    // If there are more than 3 parallel dim try to tile the extra higher level
+    // dimensions to 1 for extra dimensions.
+    if (isa<linalg::GenericOp>(linalgOp.getOperation())) {
+      SmallVector<int64_t> ranges = linalgOp.getStaticLoopRanges();
+      for (int64_t i = 0, e = workgroupTileSizes.size(); i < e; i++) {
+        if (workgroupTileSizes[i] != 0) break;
+        if (ranges[i] != 1) workgroupTileSizes[i] = 1;
+      }
+    }
     // Scan from the innermost shape dimension and try to deduce the
     // configuration for the corresponding GPU workgroup dimension.
     int64_t wgDim = 0;
@@ -1329,6 +1357,9 @@ static LogicalResult setSPIRVOpConfig(const spirv::TargetEnv &targetEnv,
       .Case<IREE::LinalgExt::FftOp>([limits](IREE::LinalgExt::FftOp op) {
         return setFftOpConfig(limits, op);
       })
+      .Case<IREE::LinalgExt::WinogradInputTransformOp,
+            IREE::LinalgExt::WinogradOutputTransformOp>(
+          [&](auto op) { return setWinogradOpConfig(limits, op); })
       .Default([](Operation *) { return success(); });
 };
 
